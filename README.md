@@ -70,6 +70,11 @@ next steps:
 | **Ray tracing** | ✅ | BLAS / TLAS built on the GPU by the game's own XboxBvhBuilder; RDNA2 BVH node format; BVH intersection instructions emulated in shaders | GPU traversal = brute force reference; the game's builder output checked on the GPU |
 | **Upscaling** | ✅ | the game's AMD FSR 4 console DLL (`amd_fidelityfx_upscaler_xbox.dll`): context, the 29 pipelines in the console driver's own container (FSPX) translated, a frame's 20 passes recorded and run on the GPU | end-to-end with the real DLL: a 1280×720 → 1920×1080 frame on an RX 9070, the input's gradient in the output |
 
+Whole-wave unsigned integer min / max / bitwise-or reductions in vertex and pixel shaders
+are recognised as a whole, including partial waves and pixel helper lanes. Compute and mesh
+shaders retain their existing translation. `XCL_NO_WAVE_REDUCTIONS=1` selects the previous
+translation for diagnostics. See [the reduction design and limits](docs/wave64-on-wave32.md#whole-wave-reductions).
+
 ### Media and tools
 
 | Feature | State | What it does | Verified by |
@@ -123,6 +128,9 @@ xcl disasm <shader.bin> [--hex]            # RDNA2 disassembler (console contain
 xcl shaders D:\data\shaders.rpf --top 50   # pack statistics; --recomp / --compile N
 xcl rpf D:\data\shaders.rpf --extract NAME --out folder
 ```
+
+The game window title shows live FPS alongside shader compilation progress. The counter
+measures presented frames; it does not establish correct rendering or gameplay.
 
 - **Without a command line** (xcl.exe opened from Explorer) XCL shows a small menu: *Choose a
   game…* (pick its exe or `MicrosoftGame.config`) or *Run again* (the last one). On an error the

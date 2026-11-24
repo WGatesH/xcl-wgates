@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use super::{elements_at, param_registers, ps_attribute_slot, ps_input_vgpr, ps_slot_attribute, ranked, vs_param_register, Mode, MsInterface, Options, KERNEL_EXPORTS, KERNEL_LANES, KERNEL_SCC_SLOT, KERNEL_SGPRS, KERNEL_SPLIT_MAGIC, KERNEL_SPLIT_SGPRS, KERNEL_VGPRS, MESH_HEADER};
+use super::reductions::{Op as WaveOp, Reduction};
 use super::upper_lanes::Read;
 use crate::gpu::dxbc::SigElement;
 use crate::gpu::rdna2::{self, Decoded, Encoding, Operand, Variant};
@@ -46,6 +47,11 @@ pub(super) struct Em {
     /// wave64 VS / PS on a GPU with 32-lane waves only: what the console's lanes 32..63 hold
     /// where the program reads them (`upper_lanes`), used when the wave has 32 lanes
     pub upper: Option<super::upper_lanes::UpperLanes>,
+    /// whole-wave reductions of a VS / PS recognised as a whole (`reductions`), by the pc of
+    /// their `v_cndmask`; the pcs of their other steps, emitted as nothing; the ops used
+    reductions: BTreeMap<u64, Reduction>,
+    reduced: BTreeSet<u64>,
+    wave_ops: BTreeSet<WaveOp>,
     /// pc of the instruction being emitted
     cur_pc: u64,
     /// MIMG instruction address → its sampler's S# when the code builds it from constants
@@ -478,6 +484,9 @@ impl Em {
             x64_words: 1,
             x64_whole_live: BTreeMap::new(),
             upper: None,
+            reductions: BTreeMap::new(),
+            reduced: BTreeSet::new(),
+            wave_ops: BTreeSet::new(),
             cur_pc: 0,
             static_ss: BTreeMap::new(),
             static_used: Vec::new(),
@@ -533,6 +542,12 @@ impl Em {
 
     pub fn take(&mut self) -> String {
         std::mem::take(&mut self.out)
+    }
+
+    /// Whole-wave reductions to emit as a whole (`reductions::find`).
+    pub fn set_reductions(&mut self, rs: Vec<Reduction>) {
+        self.reduced = rs.iter().flat_map(|r| r.rest.iter().copied()).collect();
+        self.reductions = rs.into_iter().map(|r| (r.at, r)).collect();
     }
 
     fn line(&mut self, s: &str) {
@@ -827,6 +842,42 @@ impl Em {
         }
     }
 
+    /// A whole-wave reduction recognised as a whole (`reductions`), from its `v_cndmask` to
+    /// its `v_readlane` of lane 0: the op over the mask's lanes of each 16-lane row of the
+    /// hardware wave (`xcl_wave_<op>`), and from those what the steps leave – vB the other
+    /// row's of its half (`v_permlanex16`), vA the wave's (wave64: in lanes 0..31, the upper
+    /// half's in 32..63), sH the upper half's, sT the wave's. A wave64 program's hardware wave
+    /// is (the lower part of) its console wave; a wave32 program's 64-lane wave holds two
+    /// console waves, one per half (`xcl_half`). Every lane writes vA and vB, as under the
+    /// console's whole-wave EXEC.
+    fn reduction(&mut self, r: &Reduction) {
+        let x = self.code32(r.x, r.literal, false).unwrap_or_else(|| "0u".into());
+        let m0 = self.sreg(r.mask);
+        let m1 = if r.wave64 { self.sreg(r.mask + 1) } else { "0u".into() };
+        let t = self.t();
+        self.line(&format!("uint4 {t} = xcl_wave_{}({x}, {m0}, {m1});", r.op.name()));
+        let row = |k: &str| format!("{t}.{k}");
+        let (lower, upper) = (r.op.hlsl(&row("x"), &row("y")), r.op.hlsl(&row("z"), &row("w")));
+        let (a, b) = (self.vreg(r.acc), self.vreg(r.other));
+        let st = self.sreg(r.total);
+        self.line(&format!("{b} = {t}[(WaveGetLaneIndex() >> 4) ^ 1u];"));
+        match r.half {
+            Some(sh) => {
+                let sh = self.sreg(sh);
+                self.line(&format!("uint {t}_h = {upper};"));
+                self.line(&format!("uint {t}_w = {};", r.op.hlsl(&lower, &format!("{t}_h"))));
+                self.line(&format!("{a} = select(lane_id < 32u, {t}_w, {t}_h);"));
+                self.line(&format!("{sh} = {t}_h;"));
+            }
+            None => {
+                self.line(&format!("uint {t}_w = select(xcl_half != 0u, {upper}, {lower});"));
+                self.line(&format!("{a} = {t}_w;"));
+            }
+        }
+        self.line(&format!("{st} = {t}_w;"));
+        self.wave_ops.insert(r.op);
+    }
+
     // ---------------------------------------------------------------- one instruction
 
     pub fn inst(&mut self, d: &Decoded, next: u64) -> Flow {
@@ -834,6 +885,15 @@ impl Em {
         let text = rdna2::format(d);
         self.line(&format!("// {:04x}: {text}", d.pc));
         self.cur_pc = d.pc;
+        // a whole-wave reduction recognised as a whole: emitted at its v_cndmask, its other
+        // steps as nothing
+        if let Some(r) = self.reductions.get(&d.pc).cloned() {
+            self.reduction(&r);
+            return Flow::Next;
+        }
+        if self.reduced.contains(&d.pc) {
+            return Flow::Next;
+        }
         // a far jump (`rdna2::resolve_far_jumps`) is an unconditional branch
         if let Some(t) = d.far_target {
             return Flow::Jump(t);
@@ -4115,6 +4175,9 @@ impl Em {
                 let _ = writeln!(h, "static uint xcl_sh{v}_{l} = 0u; // v_writelane slot: v{v} lane {l}");
             }
         }
+        for op in &self.wave_ops {
+            h.push_str(&wave_reduction_fn(*op, matches!(self.opt.mode, Mode::Pixel(_))));
+        }
         let infos: Vec<String> = (0..BUF_FORMATS.len()).map(|i| format!("0x{:08X}u", buf_format_info(i))).collect();
         let _ = writeln!(h, "static const uint FMT_INFO[78] = {{ {} }};", infos.join(", "));
         h.push_str(PRELUDE_MEM);
@@ -5188,6 +5251,38 @@ void st_bytes(uint a, uint4 r, uint n) {
 }
 uint dst_sel(uint4 c, uint sel, bool isint) { return select(sel == 0u, 0u, select(sel == 1u, select(isint, 1u, 0x3F800000u), c[(sel - 4u) & 3u])); }
 "#;
+
+/// `xcl_wave_<op>(x, m0, m1)` of a whole-wave reduction (`Em::reduction`): the op over the
+/// lanes of the console wave's mask m0 / m1 – x there, the identity elsewhere – per 16-lane
+/// row of the hardware wave (x: lanes 0..15 … w: 48..63). Wave operations leave out the lanes
+/// the PC did not launch (never in the mask) and helper lanes: in a pixel shader each lane
+/// first takes the op over its quad, through quad reads, which see helper lanes.
+fn wave_reduction_fn(op: WaveOp, pixel: bool) -> String {
+    let (name, id) = (op.name(), hex(op.identity()));
+    let mut s = format!("// whole-wave v_{name} of the console (`reductions`): over the lanes of mask m0 / m1, per 16-lane row of the wave\nuint4 xcl_wave_{name}(uint x, uint m0, uint m1) {{\n");
+    if pixel {
+        s.push_str("    // the quad first: quad reads see its helper lanes, wave operations do not\n    uint b = lane_id & ~3u;\n");
+        let _ = writeln!(s, "    uint q = select(lanebit_at(m0, m1, b), QuadReadLaneAt(x, 0u), {id});");
+        for k in 1..4 {
+            let _ = writeln!(s, "    q = {};", op.hlsl("q", &format!("select(lanebit_at(m0, m1, b + {k}u), QuadReadLaneAt(x, {k}u), {id})")));
+        }
+    } else {
+        let _ = writeln!(s, "    uint q = select(lanebit_at(m0, m1, lane_id), x, {id});");
+    }
+    let rows: Vec<String> = (0..4).map(|k| format!("{}(select(r == {k}u, q, {id}))", op.wave())).collect();
+    if pixel {
+        // wave operations leave helper lanes out (on the RTX 5070 Ti they return 0 there), but
+        // the console leaves the result in every lane, helpers included – and helpers feed the
+        // derivatives of what is computed from it: each lane takes its quad's live result
+        let _ = writeln!(s, "    uint r = WaveGetLaneIndex() >> 4;\n    uint4 t = uint4({});", rows.join(", "));
+        let _ = writeln!(s, "    uint4 h = IsHelperLane() ? (uint4){id} : t;");
+        let c = op.hlsl(&op.hlsl("QuadReadLaneAt(h, 0u)", "QuadReadLaneAt(h, 1u)"), &op.hlsl("QuadReadLaneAt(h, 2u)", "QuadReadLaneAt(h, 3u)"));
+        let _ = writeln!(s, "    return {c};\n}}");
+        return s;
+    }
+    let _ = writeln!(s, "    uint r = WaveGetLaneIndex() >> 4;\n    return uint4({});\n}}", rows.join(", "));
+    s
+}
 
 /// A console wave64 as two hardware wave32 halves of one thread group (docs/wave64-on-wave32.md):
 /// per-lane code is unchanged, and the halves meet ("exchange") wherever a value has to be

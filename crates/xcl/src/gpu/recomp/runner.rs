@@ -843,6 +843,19 @@ unsafe fn bind_views(dev: &ID3D12Device, list: &ID3D12GraphicsCommandList, textu
     Ok(keep)
 }
 
+/// The command queue and fence `draw_on_multi` submits with, for one device at a time.
+struct DrawQueue {
+    dev: usize,
+    queue: ID3D12CommandQueue,
+    fence: ID3D12Fence,
+    value: u64,
+}
+
+// D3D12 objects are free-threaded; access is serialised by the mutex.
+unsafe impl Send for DrawQueue {}
+
+static DRAW_QUEUE: Mutex<Option<DrawQueue>> = Mutex::new(None);
+
 /// Several draws with one pipeline in one command list: each draw gets its own user data
 /// (u0 – e.g. a different descriptor table pointer) and scissor; textures and samplers in
 /// the directly indexed heaps (see `ViewTexture`). Otherwise as `draw_on`.
@@ -880,9 +893,20 @@ fn draw_indexed_on(
     clear: [f32; 4],
 ) -> Result<Vec<[f32; 4]>, String> {
     unsafe {
-        let queue: ID3D12CommandQueue =
-            dev.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC { Type: D3D12_COMMAND_LIST_TYPE_DIRECT, ..Default::default() }).map_err(e)?;
-        let fence: ID3D12Fence = dev.CreateFence(0, D3D12_FENCE_FLAG_NONE).map_err(e)?;
+        // one queue and fence per device for all draws, not one per draw: once a test has
+        // brought up the D3D12.X backend (`hle::d3d12x::real::init`) its hooks are on the
+        // device this process gets for the adapter, and the queues made through them were
+        // not given back – a run with many draws ended in E_OUTOFMEMORY at CreateCommandQueue
+        let mut cached = DRAW_QUEUE.lock().unwrap();
+        if cached.as_ref().is_none_or(|c| c.dev != dev.as_raw() as usize) {
+            let queue: ID3D12CommandQueue =
+                dev.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC { Type: D3D12_COMMAND_LIST_TYPE_DIRECT, ..Default::default() }).map_err(e)?;
+            let fence: ID3D12Fence = dev.CreateFence(0, D3D12_FENCE_FLAG_NONE).map_err(e)?;
+            *cached = Some(DrawQueue { dev: dev.as_raw() as usize, queue, fence, value: 0 });
+        }
+        let dq = cached.as_mut().unwrap();
+        dq.value += 1;
+        let (queue, fence, value) = (dq.queue.clone(), dq.fence.clone(), dq.value);
 
         let tex = D3D12_RESOURCE_DESC {
             Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
@@ -1000,7 +1024,7 @@ fn draw_indexed_on(
         list.CopyTextureRegion(&dst, 0, 0, 0, &src, None);
         list.Close().map_err(e)?;
         queue.ExecuteCommandLists(&[Some(list.cast().map_err(e)?)]);
-        wait_for_submission(dev, &queue, &fence, 1, "draw")?;
+        wait_for_submission(dev, &queue, &fence, value, "draw")?;
         let mut p = std::ptr::null_mut();
         readback.Map(0, None, Some(&mut p)).map_err(e)?;
         let pitch = layout_fp.Footprint.RowPitch as usize;

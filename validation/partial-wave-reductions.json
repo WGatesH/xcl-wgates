@@ -1,0 +1,119 @@
+{
+  "recordedAtUtc": "2026-11-24T03:33:54.3140018Z",
+  "sourceBase": "cb868b200517d7b11bbfcb0146bf0c787ce632b6",
+  "upstream": "https://github.com/ivall/xcl",
+  "fixSource": {
+    "url": "https://github.com/ivall/xcl/pull/152",
+    "head": "4ba00d9796c3deec01be4497830e0ef96620485c",
+    "author": "Foniass",
+    "license": "GPL-2.0-only"
+  },
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "driver": "32.0.16.2124",
+    "cpu": "Intel Core i7-14700F",
+    "windowsBuild": "26200",
+    "rust": "1.100.0",
+    "dxc": "1.9.2602.17",
+    "profile": "debug",
+    "XCL_ADAPTER": "RTX 5070 Ti",
+    "XCL_REQUIRE_GPU": "mesh"
+  },
+  "validation": {
+    "buildCommand": "cargo build --locked --workspace",
+    "buildExitCode": 0,
+    "reproCommand": "cargo test --locked -p xcl --lib gpu::recomp::tests::gpu_wave64_ps_partial_wave_reductions_repro -- --exact --test-threads=1 --nocapture",
+    "reproExitCode": 0,
+    "reproPassed": 1,
+    "reproFailed": 0,
+    "reproMinimum": 2,
+    "suiteCommand": "cargo test --locked --workspace --no-fail-fast -- --test-threads=4 --nocapture",
+    "suiteExitCode": 0,
+    "totals": {
+      "passedReportedByCargo": 695,
+      "failed": 0,
+      "ignored": 42,
+      "filteredOut": 0
+    },
+    "gpuSkips": [
+      "gpu::recomp::tests::gpu_geometry_wave32_prefix_count_over_a_mask: no wave64",
+      "gpu::recomp::tests::gpu_wave32_program_in_wave64_hardware: no wave64"
+    ],
+    "newTestsPassed": [
+      "gpu_upload_batches_reuse_the_queues_upload_buffer",
+      "linear_levels_detile_by_rows_as_by_elements",
+      "detile_level_matches_element_by_element",
+      "frame_rate_uses_frame_and_time_deltas",
+      "frame_rate_waits_for_a_full_sample",
+      "frame_rate_reports_stalls_and_recovery",
+      "a_texture_with_unchanged_memory_is_left_out_until_it_is_forgotten",
+      "a_batch_detiled_on_several_threads_matches_one_thread",
+      "fine_timer_makes_short_sleeps_short"
+    ]
+  },
+  "testedFileHashes": [
+    {
+      "path": "crates/xcl/src/gpu/recomp/emit.rs",
+      "sha256": "3FB367B5884E5152BD38585FA09E51677E204BB03B5A76FF8E9B36A103BEB123"
+    },
+    {
+      "path": "crates/xcl/src/gpu/recomp/mod.rs",
+      "sha256": "73DF5EA92154CEFC94D6658160B2F6FD399ECB06A68C90E9CD8AA71C60E031C1"
+    },
+    {
+      "path": "crates/xcl/src/gpu/recomp/reductions.rs",
+      "sha256": "7E57168ADF634F4695D60B5561ADF93B6EEE2D97D57916229603F143D9CA8D72"
+    },
+    {
+      "path": "crates/xcl/src/gpu/recomp/runner.rs",
+      "sha256": "B3AE8B9A8C659E6014219B48705E33D31D1796BA741D607B4B06F16024BF6D38"
+    },
+    {
+      "path": "crates/xcl/src/gpu/recomp/tests.rs",
+      "sha256": "C47CE9ADF6A789000E5A9D03288A96BADEE586A0D8EDA67BA820D47AAF0E1900"
+    },
+    {
+      "path": "crates/xcl/src/gpu/texture.rs",
+      "sha256": "0C1A961552D92FA33405F3220A04D84D4BF385502103EDAAE511CD8072179CDA"
+    },
+    {
+      "path": "crates/xcl/src/gpu/tiling.rs",
+      "sha256": "062073A847671204BCA040E9481007349BD8DD571C8515C6AD74E40C4148761E"
+    },
+    {
+      "path": "crates/xcl/src/hle/d3d12x/present.rs",
+      "sha256": "5DFF299ABA91EAF28AEF0AD4E1503A038501835471D0AA43B61A62A2ED97EBAD"
+    },
+    {
+      "path": "crates/xcl/src/hle/d3d12x/title_textures.rs",
+      "sha256": "42EFCCAD2DD3A3F08A46190B0EE4AC4CD45FA5A2BBDA2AC59AA440168C874DDE"
+    },
+    {
+      "path": "crates/xcl/src/hle/kernelx.rs",
+      "sha256": "08A3F1F723CCEE7844484FB5BD2E8922C2B966251CF8E515D301522D0EE03005"
+    },
+    {
+      "path": "crates/xcl/src/host.rs",
+      "sha256": "60160A2E068B76A746849B4CA9EB39C7C0D3E49346FDED82D9040A357A3DCE68"
+    },
+    {
+      "path": "docs/wave64-on-wave32.md",
+      "sha256": "2AF61866A297D93FF82D46EED6894CE520850F1A392AB50665C898F6EF70E99F"
+    },
+    {
+      "path": "README.md",
+      "sha256": "2D8314DFA005919FCD8C02F172F261937FAF417E570EFCFA1F0F771869D2C888"
+    }
+  ],
+  "limitations": [
+    "Cargo pass counts include two no-wave64 skips and early returns for missing game inputs.",
+    "No retail game, GTA VI, AMD GPU or release performance run was performed.",
+    "This checkpoint adds validation metadata after the tested code; no runtime code changed after the recorded tests.",
+    "The deprecated Atomic::fetch_update warning remains."
+  ],
+  "aiUse": {
+    "tool": "Codex",
+    "model": "Exact runtime model identifier unavailable",
+    "work": "Adapted upstream PR #152, resolved conflicts, added regression coverage, integrated reviewed upstream updates, and executed native Windows build and GPU tests."
+  }
+}
